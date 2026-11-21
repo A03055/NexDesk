@@ -1,0 +1,68 @@
+{
+  "name": "nexdesk",
+  "productName": "NexDesk",
+  "version": "1.0.0",
+  "description": "Free, open-source, portable remote desktop & remote support tool (AnyDesk/TeamViewer alternative).",
+  "main": "src/main.js",
+  "author": "NexDesk Contributors",
+  "license": "MIT",
+  "keywords": [
+    "remote-desktop",
+    "remote-support",
+    "webrtc",
+    "electron",
+    "portable",
+    "anydesk-alternative",
+    "teamviewer-alternative"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dev:a": "cross-env NEXDESK_PROFILE=a electron .",
+    "dev:b": "cross-env NEXDESK_PROFILE=b electron .",
+    "dist": "electron-builder --win portable --x64",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.4"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.github.nexdesk",
+    "productName": "NexDesk",
+    "copyright": "MIT License - NexDesk Contributors",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "NexDesk-${version}-portable.exe"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/A03055/NexDesk.git"
+  },
+  "homepage": "https://github.com/A03055/NexDesk",
+  "bugs": {
+    "url": "https://github.com/A03055/NexDesk/issues"
+  }
+}
