@@ -1,7 +1,7 @@
 {
   "name": "nexdesk",
   "productName": "NexDesk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Free, open-source, portable remote desktop & remote support tool (AnyDesk/TeamViewer alternative).",
   "main": "src/main.js",
   "author": "NexDesk Contributors",
@@ -19,7 +19,7 @@
     "start": "electron .",
     "dev:a": "cross-env NEXDESK_PROFILE=a electron .",
     "dev:b": "cross-env NEXDESK_PROFILE=b electron .",
-    "dist": "electron-builder --win portable --x64",
+    "dist": "electron-builder --win --x64",
     "pack": "electron-builder --dir"
   },
   "dependencies": {
@@ -36,7 +36,12 @@
     "copyright": "MIT License - NexDesk Contributors",
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!node_modules/peerjs/dist/!(peerjs.min.js)",
+      "!node_modules/**/{README,CHANGELOG,LICENSE}*",
+      "!node_modules/**/*.md"
     ],
     "directories": {
       "output": "dist",
@@ -50,12 +55,24 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
         }
-      ]
+      ],
+      "artifactName": "NexDesk-${version}-win-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "NexDesk-${version}-portable.exe"
-    }
+      "artifactName": "NexDesk-${version}-portable.exe",
+      "splashImage": "build/splash.bmp"
+    },
+    "electronLanguages": [
+      "en-US",
+      "tr"
+    ]
   },
   "repository": {
     "type": "git",

@@ -11,11 +11,15 @@ const MAX_FILE = 512 * 1024 * 1024;
 const ACCEPT_TIMEOUT = 60;           // seconds the host has to answer
 const MAX_FAILS = 5;                 // wrong passwords before lockout
 const LOCK_MS = 5 * 60 * 1000;
+// maxH caps the encoded height: software encoders (no GPU, VMs, Windows Sandbox)
+// can't keep up with 1440p/4K, and 1080p is plenty for remote support.
 const QUALITY = {
-  high:     { bitrate: 16_000_000, fps: 60, scale: 1,   pref: 'maintain-resolution' },
-  balanced: { bitrate: 6_000_000,  fps: 30, scale: 1,   pref: 'balanced' },
-  fast:     { bitrate: 1_500_000,  fps: 20, scale: 1.5, pref: 'maintain-framerate' }
+  high:     { bitrate: 12_000_000, fps: 60, maxH: 2160, pref: 'maintain-resolution', hint: 'detail' },
+  balanced: { bitrate: 5_000_000,  fps: 30, maxH: 1080, pref: 'balanced',            hint: 'detail' },
+  fast:     { bitrate: 1_500_000,  fps: 24, maxH: 720,  pref: 'maintain-framerate',  hint: 'motion' }
 };
+const HEARTBEAT_TIMEOUT = 8000;      // ms without any sign of life -> connection lost
+const RT_CHANNEL_ID = 1000;          // negotiated low-latency channel (mouse, cursor, heartbeat)
 
 // ===========================================================================
 // State
@@ -43,7 +47,11 @@ const S = {
   drawerTab: 'chat',
   downKeys: new Set(),   // viewer: keys currently held
   hostDown: new Set(),   // host: keys/buttons injected and still held
-  failLog: []            // host: timestamps of failed password attempts
+  failLog: [],           // host: timestamps of failed password attempts
+  rt: null,              // RTCDataChannel: unordered, unreliable, low latency
+  hbTimer: null,
+  cursorTimer: null,
+  lastSeen: 0
 };
 const transfers = new Map();
 let sendQueue = Promise.resolve();
@@ -261,6 +269,13 @@ function onIncomingCall(call) {
   S.call = call;
   call.answer();
   call.on('stream', (stream) => {
+    // Lowest possible latency: don't let the jitter buffer hold frames back.
+    try {
+      call.peerConnection.getReceivers().forEach((r) => {
+        try { r.jitterBufferTarget = 0; } catch {}
+        try { r.playoutDelayHint = 0; } catch {}
+      });
+    } catch {}
     const v = $('#remoteVideo');
     v.srcObject = stream;
     v.play().catch(() => {});
@@ -276,11 +291,51 @@ function onAccepted(msg) {
   S.partner.name = safeName(msg.name);
   S.perms = { control: !!(msg.perms && msg.perms.control), files: !!(msg.perms && msg.perms.files) };
   hideConnecting();
+  openRealtime();
   openViewerUI();
   addRecent(S.partner.id, S.partner.name);
   toast(t('ok.connected', { name: S.partner.name }), 'ok');
   addSysMsg(t('sys.joined'));
   S.conn.send({ type: 'quality', level: cfg.quality });
+  renderDisplayMenu(Array.isArray(msg.displays) ? msg.displays : [], msg.display);
+}
+
+// Viewer: let the user switch between the host's monitors.
+function renderDisplayMenu(displays, current) {
+  const menu = $('#displayMenu');
+  menu.innerHTML = '';
+  $('#displayWrap').hidden = displays.length < 2;
+  displays.slice(0, 8).forEach((d, i) => {
+    const b = document.createElement('button');
+    const w = Number(d.width) || 0, h = Number(d.height) || 0;
+    b.textContent = `${t('set.screen')} ${i + 1} — ${w}×${h}${d.primary ? ' (' + t('set.primary') + ')' : ''}`;
+    b.classList.toggle('active', current ? String(d.id) === String(current) : !!d.primary);
+    b.onclick = () => {
+      menu.hidden = true;
+      $$('#displayMenu button').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      try { S.conn.send({ type: 'display', id: String(d.id) }); } catch {}
+    };
+    menu.appendChild(b);
+  });
+}
+
+// Host: switch the shared monitor without dropping the session.
+async function switchDisplay(id) {
+  if (S.mode !== 'host' || !/^\d+$/.test(String(id))) return;
+  try {
+    await nx.selectDisplay(id);
+    const ns = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 60 } }, audio: false });
+    const nt = ns.getVideoTracks()[0];
+    const sender = S.call.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'video');
+    await sender.replaceTrack(nt);
+    if (S.stream) S.stream.getTracks().forEach((tr) => tr.stop());
+    S.stream = ns;
+    $('#setDisplay').value = String(id);
+    applyQuality(S.quality || cfg.quality);
+  } catch (e) {
+    console.warn('switch display failed', e);
+  }
 }
 
 // ===========================================================================
@@ -323,6 +378,7 @@ async function onHello(conn, msg) {
   $('#permControl').checked = true;
   $('#permFiles').checked = true;
   $('#incomingModal').hidden = false;
+  nx.inputStart(); // pre-warm the input helper so control is instant after "Accept"
   nx.attention();
   nx.notify(t('notify.incoming'), t('notify.incomingBody', { name, id: fmtId(remoteId) }));
   tickCountdown();
@@ -337,9 +393,34 @@ function tickCountdown() {
   p.cdTimer = setTimeout(tickCountdown, 1000);
 }
 
-function closeIncoming() {
+function closeIncoming(accepting = false) {
   if (S.pending && S.pending.cdTimer) clearTimeout(S.pending.cdTimer);
   $('#incomingModal').hidden = true;
+  if (!accepting && !S.mode) nx.inputStop();
+}
+
+// Put H.264 first in the offer: Chromium can then use the GPU's hardware encoder
+// (lower CPU, lower latency). Falls back to VP8/VP9 automatically if unsupported.
+function preferH264(sdp) {
+  try {
+    const lines = sdp.split('\r\n');
+    const mi = lines.findIndex((l) => l.startsWith('m=video'));
+    if (mi < 0) return sdp;
+    const h264 = new Set(), pm1 = new Set();
+    for (const l of lines) {
+      let m = l.match(/^a=rtpmap:(\d+) H264\/90000/i);
+      if (m) h264.add(m[1]);
+      m = l.match(/^a=fmtp:(\d+) .*packetization-mode=1/);
+      if (m) pm1.add(m[1]);
+    }
+    if (!h264.size) return sdp;
+    const parts = lines[mi].split(' ');
+    const rank = (pt) => (h264.has(pt) && pm1.has(pt) ? 0 : h264.has(pt) ? 1 : 2);
+    lines[mi] = [...parts.slice(0, 3), ...parts.slice(3).sort((a, b) => rank(a) - rank(b))].join(' ');
+    return lines.join('\r\n');
+  } catch {
+    return sdp;
+  }
 }
 
 function denyPending(reason = 'denied') {
@@ -369,7 +450,7 @@ async function onAuth(conn, msg) {
 async function acceptPending(perms) {
   const p = S.pending;
   if (!p) return;
-  closeIncoming();
+  closeIncoming(true);
   S.pending = null;
 
   let stream;
@@ -380,6 +461,7 @@ async function acceptPending(perms) {
   } catch (e) {
     console.error(e);
     toast(t('err.capture'), 'err');
+    nx.inputStop();
     try { p.conn.send({ type: 'reject', reason: 'capture' }); } catch {}
     setTimeout(() => { try { p.conn.close(); } catch {} }, 600);
     return;
@@ -395,20 +477,112 @@ async function acceptPending(perms) {
   S.perms = { control: !!perms.control, files: !!perms.files };
   S.allowControl = S.perms.control;
 
-  S.conn.send({ type: 'accept', name: cfg.name, perms: S.perms });
-  S.call = peer.call(S.conn.peer, stream, { metadata: { app: 'nexdesk' } });
+  let displays = [];
+  try { displays = await nx.displays(); } catch {}
+  S.conn.send({ type: 'accept', name: cfg.name, perms: S.perms, displays, display: $('#setDisplay').value || null });
+  openRealtime();
+  S.call = peer.call(S.conn.peer, stream, { metadata: { app: 'nexdesk' }, sdpTransform: preferH264 });
   S.call.on('error', () => {});
+  S.call.on('close', () => { if (S.mode === 'host') endSession('end.lost', false); });
   applyQuality(cfg.quality);
+  startCursorShare();
 
-  if (S.perms.control) await nx.inputStart();
+  if (S.perms.control) nx.inputStart(); else nx.inputStop();
   openHostUI();
   addSysMsg(t('sys.joined'));
   toast(t('ok.hostConnected', { name: S.partner.name }), 'ok');
   nx.notify('NexDesk', t('ok.hostConnected', { name: S.partner.name }));
 }
 
+// ===========================================================================
+// Realtime channel + heartbeat (both roles)
+// A second, *negotiated* data channel on the same peer connection: unordered and
+// without retransmits, so mouse moves / cursor updates never wait behind file chunks.
+// ===========================================================================
+function openRealtime() {
+  S.lastSeen = Date.now();
+  const pc = S.conn && S.conn.peerConnection;
+  if (pc) {
+    try {
+      const rt = pc.createDataChannel('nx-rt', { negotiated: true, id: RT_CHANNEL_ID, ordered: false, maxRetransmits: 0 });
+      rt.onmessage = (e) => {
+        S.lastSeen = Date.now();
+        let m;
+        try { m = JSON.parse(e.data); } catch { return; }
+        onRealtime(m);
+      };
+      S.rt = rt;
+    } catch (e) { console.warn('rt channel', e); }
+    pc.addEventListener('connectionstatechange', () => {
+      if ((pc.connectionState === 'failed' || pc.connectionState === 'closed') && S.conn && S.conn.peerConnection === pc) {
+        endSession('end.lost', false);
+      }
+    });
+  }
+  clearInterval(S.hbTimer);
+  S.hbTimer = setInterval(() => {
+    if (!S.mode || S.mode === 'connecting') return;
+    if (!rtSend({ t: 'p' })) { try { S.conn.send({ type: 'ping' }); } catch {} }
+    if (Date.now() - S.lastSeen > HEARTBEAT_TIMEOUT) endSession('end.lost', false);
+  }, 1000);
+}
+
+function rtSend(m) {
+  const rt = S.rt;
+  if (!rt || rt.readyState !== 'open') return false;
+  try { rt.send(JSON.stringify(m)); return true; } catch { return false; }
+}
+
+function onRealtime(m) {
+  if (!m || typeof m !== 'object') return;
+  if (m.t === 'm' && S.mode === 'host') onRemoteInput({ t: 'm', x: m.x, y: m.y });
+  else if (m.t === 'c' && S.mode === 'viewer') drawRemoteCursor(m.x, m.y);
+}
+
+// Host: share the real cursor position (screen capture doesn't always draw it).
+function startCursorShare() {
+  let busy = false, last = '', lastSent = 0;
+  clearInterval(S.cursorTimer);
+  S.cursorTimer = setInterval(async () => {
+    if (busy || S.mode !== 'host') return;
+    busy = true;
+    try {
+      const p = await nx.cursor();
+      const key = p ? p.x + ',' + p.y : 'out';
+      // send on change, and re-send every 500 ms (the channel is lossy by design)
+      if (key !== last || Date.now() - lastSent > 500) {
+        if (rtSend(p ? { t: 'c', x: p.x, y: p.y } : { t: 'c', x: -1, y: -1 })) { last = key; lastSent = Date.now(); }
+      }
+    } catch {}
+    busy = false;
+  }, 30);
+}
+
+// Viewer: draw the host's cursor on top of the video.
+let lastCursor = null;
+function drawRemoteCursor(x, y) {
+  lastCursor = [x, y];
+  const c = $('#remoteCursor');
+  const v = video();
+  // While the viewer is steering, their own pointer is already there: don't show two cursors.
+  const steering = canControl() && Date.now() - lastLocalMove < 700;
+  if (!(x >= 0 && y >= 0) || !v.videoWidth || steering) { c.hidden = true; return; }
+  const r = v.getBoundingClientRect();
+  const s = Math.min(r.width / v.videoWidth, r.height / v.videoHeight);
+  const cw = v.videoWidth * s, ch = v.videoHeight * s;
+  const left = r.left + (r.width - cw) / 2 + x * cw;
+  const top = r.top + (r.height - ch) / 2 + y * ch;
+  c.style.transform = `translate(${left}px, ${top}px)`;
+  c.hidden = false;
+}
+
 async function applyQuality(level) {
   const q = QUALITY[level] || QUALITY.balanced;
+  S.quality = QUALITY[level] ? level : 'balanced';
+  const track = S.stream && S.stream.getVideoTracks()[0];
+  const h = (track && track.getSettings().height) || 1080;
+  const scale = Math.max(1, h / q.maxH);
+  if (track) { try { track.contentHint = q.hint; } catch {} }
   for (let i = 0; i < 50; i++) {
     const pc = S.call && S.call.peerConnection;
     const sender = pc && pc.getSenders().find((s) => s.track && s.track.kind === 'video');
@@ -418,7 +592,7 @@ async function applyQuality(level) {
         if (!params.encodings || !params.encodings.length) params.encodings = [{}];
         params.encodings[0].maxBitrate = q.bitrate;
         params.encodings[0].maxFramerate = q.fps;
-        params.encodings[0].scaleResolutionDownBy = q.scale;
+        params.encodings[0].scaleResolutionDownBy = scale;
         params.degradationPreference = q.pref;
         await sender.setParameters(params);
         return;
@@ -447,6 +621,10 @@ function releaseHostInput() {
 
 function onRemoteInput(ev) {
   if (S.mode !== 'host' || !S.allowControl || !S.perms.control || !ev) return;
+  // clicks carry their own position, so they land correctly even if a move packet was dropped
+  if ((ev.t === 'd' || ev.t === 'u') && ev.x >= 0 && ev.x <= 1 && ev.y >= 0 && ev.y <= 1) {
+    nx.input({ t: 'm', x: ev.x, y: ev.y });
+  }
   if (ev.t === 'k') {
     const key = `k:${ev.s}:${ev.e ? 1 : 0}`;
     if (ev.u) S.hostDown.delete(key); else S.hostDown.add(key);
@@ -461,6 +639,8 @@ function onRemoteInput(ev) {
 function onData(conn, m) {
   if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
   const isActive = S.conn === conn;
+  if (isActive) S.lastSeen = Date.now();
+  if (m.type === 'ping') return;
 
   switch (m.type) {
     // ---- handshake
@@ -499,6 +679,7 @@ function onData(conn, m) {
   switch (m.type) {
     case 'i': return onRemoteInput(m.e);
     case 'quality': if (S.mode === 'host' && QUALITY[m.level]) applyQuality(m.level); return;
+    case 'display': if (S.mode === 'host') switchDisplay(m.id); return;
     case 'perms':
       if (S.mode !== 'viewer' || !m.perms) return;
       S.perms = { control: !!m.perms.control, files: !!m.perms.files };
@@ -555,7 +736,12 @@ function resetSession() {
   if (S.call) { try { S.call.close(); } catch {} }
   if (S.stream) S.stream.getTracks().forEach((tr) => tr.stop());
   clearInterval(S.statsTimer);
+  clearInterval(S.hbTimer);
+  clearInterval(S.cursorTimer);
+  if (S.rt) { try { S.rt.close(); } catch {} }
+  $('#remoteCursor').hidden = true;
   Object.assign(S, {
+    rt: null, hbTimer: null, cursorTimer: null,
     mode: null, conn: null, call: null, stream: null, partner: null, auth: null,
     perms: { control: true, files: true }, allowControl: true, sas: null, binding: null,
     statsTimer: null, lastStats: null, unread: 0
@@ -611,6 +797,8 @@ async function updateStats() {
     parts.push(mbps.toFixed(1) + ' Mbps');
     if (pair && pair.currentRoundTripTime != null) parts.push(Math.round(pair.currentRoundTripTime * 1000) + ' ms');
     if (remoteCand) parts.push(remoteCand.candidateType === 'relay' ? 'TURN' : 'P2P');
+    const codec = inbound.codecId && stats.get(inbound.codecId);
+    if (codec && codec.mimeType) parts.push(codec.mimeType.split('/')[1].toUpperCase());
     $('#sbStats').textContent = parts.join(' · ');
   } catch {}
 }
@@ -778,7 +966,8 @@ async function sendOne(tr) {
     for (let off = 0; off < tr.size; off += CHUNK) {
       if (tr.aborted || !conn.open || S.conn !== conn) throw new Error('aborted');
       // back-pressure: keep the SCTP buffer reasonably small
-      while (conn.dataChannel && conn.dataChannel.bufferedAmount > 4 * 1024 * 1024) await sleep(15);
+      // small buffer => keystrokes/clicks on the same channel never queue behind a big file
+      while (conn.dataChannel && conn.dataChannel.bufferedAmount > 1024 * 1024) await sleep(10);
       while (conn.bufferSize > 32) await sleep(15);
       const buf = await tr.file.slice(off, off + CHUNK).arrayBuffer();
       conn.send({ type: 'f-chunk', id: tr.id, data: buf });
@@ -860,6 +1049,7 @@ async function sendClipboard() {
 const video = () => $('#remoteVideo');
 let pendingMove = null;
 let moveScheduled = false;
+let lastLocalMove = 0;
 
 function canControl() {
   return S.mode === 'viewer' && S.perms.control && S.conn && S.conn.open && !$('#session').hidden;
@@ -883,7 +1073,9 @@ function videoPoint(ev) {
 
 function flushMove() {
   moveScheduled = false;
-  if (pendingMove && canControl()) sendInput({ t: 'm', x: pendingMove.x, y: pendingMove.y });
+  if (pendingMove && canControl() && !rtSend({ t: 'm', x: pendingMove.x, y: pendingMove.y })) {
+    sendInput({ t: 'm', x: pendingMove.x, y: pendingMove.y });
+  }
   pendingMove = null;
 }
 
@@ -896,6 +1088,8 @@ function bindViewerInput() {
     if (!canControl()) return;
     const p = videoPoint(e);
     if (!p) return;
+    lastLocalMove = Date.now();
+    $('#remoteCursor').hidden = true;
     pendingMove = p;
     if (!moveScheduled) { moveScheduled = true; requestAnimationFrame(flushMove); }
   });
@@ -906,8 +1100,7 @@ function bindViewerInput() {
     e.preventDefault();
     const p = videoPoint(e);
     if (!p || btn(e.button) === undefined) return;
-    sendInput({ t: 'm', x: p.x, y: p.y });
-    sendInput({ t: 'd', b: btn(e.button) });
+    sendInput({ t: 'd', b: btn(e.button), x: p.x, y: p.y });
     S.downKeys.add('b' + btn(e.button));
   });
   window.addEventListener('mouseup', (e) => {
@@ -916,6 +1109,12 @@ function bindViewerInput() {
     S.downKeys.delete('b' + btn(e.button));
   });
   v.addEventListener('contextmenu', (e) => e.preventDefault());
+  // keep the drawn host cursor glued to the video when its size/layout changes
+  const redraw = () => { if (lastCursor && S.mode === 'viewer') drawRemoteCursor(lastCursor[0], lastCursor[1]); };
+  v.addEventListener('resize', redraw);
+  v.addEventListener('loadedmetadata', redraw);
+  window.addEventListener('resize', redraw);
+  wrap.addEventListener('scroll', redraw);
   v.addEventListener('wheel', (e) => {
     if (!canControl()) return;
     e.preventDefault();
@@ -1101,9 +1300,17 @@ function bindUi() {
     $('#sbFitBtn').classList.toggle('active', w.classList.contains('original'));
   };
   $('#sbQuality').onchange = (e) => { if (S.conn) S.conn.send({ type: 'quality', level: e.target.value }); };
-  $('#sbKeysBtn').onclick = (e) => { e.stopPropagation(); $('#keysMenu').hidden = !$('#keysMenu').hidden; };
+  $('#sbKeysBtn').onclick = (e) => { e.stopPropagation(); $('#displayMenu').hidden = true; $('#keysMenu').hidden = !$('#keysMenu').hidden; };
+  $('#sbDisplayBtn').onclick = (e) => { e.stopPropagation(); $('#keysMenu').hidden = true; $('#displayMenu').hidden = !$('#displayMenu').hidden; };
+
+  // Window is closing: say goodbye so the other side disconnects immediately.
+  nx.onClosing(() => {
+    if (S.pending) denyPending('denied');
+    if (S.mode === 'viewer' || S.mode === 'host') endSession('end.local', true);
+    else if (S.mode === 'connecting' && S.conn && S.conn.open) { try { S.conn.send({ type: 'bye' }); } catch {} }
+  });
   $$('#keysMenu button').forEach((b) => (b.onclick = () => { $('#keysMenu').hidden = true; sendCombo(b.dataset.combo); }));
-  document.addEventListener('click', (e) => { if (!e.target.closest('.menu-wrap')) $('#keysMenu').hidden = true; });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.menu-wrap')) { $('#keysMenu').hidden = true; $('#displayMenu').hidden = true; } });
 
   // drawer
   $('#drawerClose').onclick = () => { $('#drawer').hidden = true; if (S.mode === 'viewer') $('#remoteWrap').focus(); };

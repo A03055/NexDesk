@@ -270,6 +270,10 @@
           <option value="balanced" data-i18n="q.balanced">Dengeli</option>
           <option value="fast" data-i18n="q.fast">Hızlı (düşük bant)</option>
         </select>
+        <div class="menu-wrap" id="displayWrap" hidden>
+          <button class="icon-btn" id="sbDisplayBtn" data-i18n-title="tb.display"><svg><use href="#i-monitor" /></svg></button>
+          <div class="menu" id="displayMenu" hidden></div>
+        </div>
         <div class="menu-wrap">
           <button class="icon-btn" id="sbKeysBtn" data-i18n-title="tb.keys"><svg><use href="#i-keyboard" /></svg></button>
           <div class="menu" id="keysMenu" hidden>
@@ -378,6 +382,10 @@
       </div>
     </div>
   </div>
+
+  <svg id="remoteCursor" viewBox="0 0 24 24" hidden aria-hidden="true">
+    <path d="M4 2 20 12.6l-7.1 1.2 4.3 7.5-3 1.7-4.3-7.6L4 20.3z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round" />
+  </svg>
 
   <div id="toasts"></div>
 

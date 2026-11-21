@@ -134,6 +134,7 @@ function createWindow() {
         setTimeout(() => win.webContents.executeJavaScript(code).catch((e) => console.error(e)), 500);
       });
     }
+    ipcMain.handle('debug:top', () => { win.setAlwaysOnTop(true); win.moveTop(); });
     ipcMain.handle('debug:shot', async (_e, name) => {
       const img = await win.webContents.capturePage();
       const dir = process.env.NEXDESK_SHOT_DIR || app.getPath('temp');
@@ -142,6 +143,14 @@ function createWindow() {
       return file;
     });
   }
+  // Give the renderer a moment to tell the peer "bye" so the other side disconnects instantly.
+  let allowClose = false;
+  win.on('close', (e) => {
+    if (allowClose) return;
+    e.preventDefault();
+    try { win.webContents.send('app:closing'); } catch {}
+    setTimeout(() => { allowClose = true; if (win) win.close(); }, 350);
+  });
   win.on('closed', () => { win = null; stopInput(); });
 }
 
@@ -474,7 +483,16 @@ ipcMain.handle('displays:list', () => screen.getAllDisplays().map((d, i) => ({
   id: d.id, index: i, primary: d.id === screen.getPrimaryDisplay().id,
   width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor)
 })));
-ipcMain.handle('displays:select', (_e, id) => { captureDisplayId = Number(id) || null; return captureDisplay().id; });
+// Host cursor position, normalized to the captured display (null when outside it).
+ipcMain.handle('cursor:get', () => {
+  const d = captureDisplay();
+  const pt = screen.getCursorScreenPoint();
+  const x = (pt.x - d.bounds.x) / d.bounds.width;
+  const y = (pt.y - d.bounds.y) / d.bounds.height;
+  if (x < 0 || y < 0 || x > 1 || y > 1) return null;
+  return { x: Math.round(x * 10000) / 10000, y: Math.round(y * 10000) / 10000 };
+});
+ipcMain.handle('displays:select',(_e, id) => { captureDisplayId = Number(id) || null; return captureDisplay().id; });
 
 ipcMain.handle('win:attention', () => {
   if (!win) return;

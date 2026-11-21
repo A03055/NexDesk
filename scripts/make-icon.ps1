@@ -47,3 +47,32 @@ $bmp.Save((Join-Path $Root 'build\icon.png'), [System.Drawing.Imaging.ImageForma
 $bmp.Save((Join-Path $Root 'src\renderer\assets\icon.png'), [System.Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
 Write-Output 'icon ok'
+
+# ---- Splash shown by the portable launcher while it unpacks (24-bit BMP) ----
+$W = 480; $H = 280
+$sp = New-Object System.Drawing.Bitmap $W, $H, ([System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+$sg = [System.Drawing.Graphics]::FromImage($sp)
+$sg.SmoothingMode = 'AntiAlias'; $sg.TextRenderingHint = 'AntiAliasGridFit'
+$sg.Clear([System.Drawing.Color]::FromArgb(255, 11, 13, 23))
+$glow = New-Object System.Drawing.Drawing2D.GraphicsPath
+$glow.AddEllipse(-60, -140, 600, 360)
+$pgb = New-Object System.Drawing.Drawing2D.PathGradientBrush $glow
+$pgb.CenterColor = [System.Drawing.Color]::FromArgb(255, 40, 30, 90)
+$pgb.SurroundColors = @([System.Drawing.Color]::FromArgb(255, 11, 13, 23))
+$sg.FillPath($pgb, $glow)
+$logo = [System.Drawing.Image]::FromFile((Join-Path $Root 'build\icon.png'))
+$sg.DrawImage($logo, [int](($W - 96) / 2), 46, 96, 96)
+$logo.Dispose()
+$fmt = New-Object System.Drawing.StringFormat; $fmt.Alignment = 'Center'
+$f1 = New-Object System.Drawing.Font('Segoe UI Semibold', 22)
+$f2 = New-Object System.Drawing.Font('Segoe UI', 10)
+$sg.DrawString('NexDesk', $f1, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF 0, 156, $W, 40), $fmt)
+$sub = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 141, 147, 173))
+$trText = 'Starting... / Ba' + [char]0x015F + 'lat' + [char]0x0131 + 'l' + [char]0x0131 + 'yor...'
+$sg.DrawString($trText, $f2, $sub, (New-Object System.Drawing.RectangleF 0, 204, $W, 24), $fmt)
+$bar = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.Point 140, 0), (New-Object System.Drawing.Point 340, 0), ([System.Drawing.Color]::FromArgb(255, 124, 92, 255)), ([System.Drawing.Color]::FromArgb(255, 34, 211, 238))
+$sg.FillRectangle($bar, 190, 240, 100, 3)
+$sg.Dispose()
+$sp.Save((Join-Path $Root 'build\splash.bmp'), [System.Drawing.Imaging.ImageFormat]::Bmp)
+$sp.Dispose()
+Write-Output 'splash ok'

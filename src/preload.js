@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('nx', {
   clipWrite: (t) => invoke('clip:write', t),
 
   displays: () => invoke('displays:list'),
+  cursor: () => invoke('cursor:get'),
+  onClosing: (fn) => ipcRenderer.on('app:closing', () => fn()),
   selectDisplay: (id) => invoke('displays:select', id),
 
   attention: () => invoke('win:attention'),
@@ -36,5 +38,6 @@ contextBridge.exposeInMainWorld('nx', {
   openExternal: (url) => invoke('open:external', url),
 
   // development only (handler is not registered in packaged builds)
-  debugShot: (name) => invoke('debug:shot', name)
+  debugShot: (name) => invoke('debug:shot', name),
+  debugTop: () => invoke('debug:top')
 });

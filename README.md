@@ -32,7 +32,10 @@ A lightweight alternative to AnyDesk and TeamViewer: no installation, no account
 | 💬 **Chat & clipboard** | Built-in chat, plus one-click clipboard text sharing. |
 | 🔑 **Unattended access** | Optional password-based access to your own machines, without the password ever touching the network. |
 | ⌨️ **Special keys** | Win key, Alt+Tab, Task Manager, Win+R, Win+L and more from the toolbar. |
-| ⚡ **Adaptive quality** | High (up to 60 fps), Balanced, or Fast for slow connections, with live fps, bitrate and latency stats. |
+| ⚡ **Fast & smooth** | GPU-accelerated H.264 encoding when available, a separate low-latency channel for mouse & cursor, zero jitter buffer. High / Balanced (1080p) / Fast (720p) modes with live fps, bitrate, latency and codec stats. |
+| 🖱️ **Live remote cursor** | The host's cursor is drawn on top of the stream, even when screen capture doesn't include it. |
+| 🖥️🖥️ **Multi-monitor** | Switch between the remote PC's screens during a session. |
+| 💓 **Instant disconnect detection** | Closing either side ends the session on the other within ~1 s; a crash or network loss is detected within ~9 s by a heartbeat. |
 | 🧳 **Portable** | A single `.exe`. Download, double-click, done. |
 | 🌍 **Multi-language** | English and Turkish. |
 
@@ -55,7 +58,9 @@ A lightweight alternative to AnyDesk and TeamViewer: no installation, no account
 
 ## 🚀 Getting started
 
-1. Download **`NexDesk-x.y.z-portable.exe`** from the [latest release](../../releases/latest).
+1. Download from the [latest release](../../releases/latest):
+   - **`NexDesk-x.y.z-portable.exe`**: a single file; it unpacks itself on each start (takes a few seconds), or
+   - **`NexDesk-x.y.z-win-x64.zip`**: extract once, then run `NexDesk.exe`. Starts instantly (recommended for regular use).
 2. Run it on **both** computers. No installation needed.
 3. The person who needs help reads out their **9-digit address**.
 4. The helper types the address and clicks **Connect**.
@@ -152,7 +157,7 @@ and attaches it, together with its SHA-256 checksum, to a GitHub Release.
 
 ## 🗺️ Roadmap
 
-- [ ] Multi-monitor switching during a session
+- [x] Multi-monitor switching during a session
 - [ ] Audio streaming
 - [ ] Self-hostable signaling server option
 - [ ] macOS / Linux host support
