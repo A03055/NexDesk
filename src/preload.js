@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('nx', {
   inputStart: () => invoke('input:start'),
   inputStop: () => invoke('input:stop'),
   input: (ev) => ipcRenderer.send('input:event', ev),
+  pointerName: (name) => invoke('pointer:name', name),
 
   setPassword: (pw) => invoke('auth:setPassword', pw),
   challenge: () => invoke('auth:challenge'),

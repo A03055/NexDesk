@@ -487,6 +487,7 @@ async function acceptPending(perms) {
   applyQuality(cfg.quality);
   startCursorShare();
 
+  nx.pointerName(S.partner.name);
   if (S.perms.control) nx.inputStart(); else nx.inputStop();
   openHostUI();
   addSysMsg(t('sys.joined'));

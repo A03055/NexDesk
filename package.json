@@ -1,7 +1,7 @@
 {
   "name": "nexdesk",
   "productName": "NexDesk",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Free, open-source, portable remote desktop & remote support tool (AnyDesk/TeamViewer alternative).",
   "main": "src/main.js",
   "author": "NexDesk Contributors",

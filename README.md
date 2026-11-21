@@ -33,6 +33,7 @@ A lightweight alternative to AnyDesk and TeamViewer: no installation, no account
 | 🔑 **Unattended access** | Optional password-based access to your own machines, without the password ever touching the network. |
 | ⌨️ **Special keys** | Win key, Alt+Tab, Task Manager, Win+R, Win+L and more from the toolbar. |
 | ⚡ **Fast & smooth** | GPU-accelerated H.264 encoding when available, a separate low-latency channel for mouse & cursor, zero jitter buffer. High / Balanced (1080p) / Fast (720p) modes with live fps, bitrate, latency and codec stats. |
+| 👆 **Partner pointer** | The person being helped sees the helper's pointer with their name, even in Windows Sandbox, RDP sessions and VMs where injected cursor moves aren't drawn. |
 | 🖱️ **Live remote cursor** | The host's cursor is drawn on top of the stream, even when screen capture doesn't include it. |
 | 🖥️🖥️ **Multi-monitor** | Switch between the remote PC's screens during a session. |
 | 💓 **Instant disconnect detection** | Closing either side ends the session on the other within ~1 s; a crash or network loss is detected within ~9 s by a heartbeat. |

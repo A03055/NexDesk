@@ -151,7 +151,7 @@ function createWindow() {
     try { win.webContents.send('app:closing'); } catch {}
     setTimeout(() => { allowClose = true; if (win) win.close(); }, 350);
   });
-  win.on('closed', () => { win = null; stopInput(); });
+  win.on('closed', () => { win = null; stopInput(); destroyPointer(); app.quit(); });
 }
 
 app.on('second-instance', () => {
@@ -185,7 +185,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', stopInput);
+app.on('before-quit', () => { stopInput(); destroyPointer(); });
 
 // Prevent any webview / unexpected web contents.
 app.on('web-contents-created', (_e, contents) => {
@@ -288,12 +288,73 @@ function toAbsolute(nx, ny) {
   const py = d.bounds.y + ny * (d.bounds.height - 1);
   return [
     Math.round(((px - minX) * 65535) / Math.max(1, maxX - minX - 1)),
-    Math.round(((py - minY) * 65535) / Math.max(1, maxY - minY - 1))
+    Math.round(((py - minY) * 65535) / Math.max(1, maxY - minY - 1)),
+    Math.round(px), Math.round(py)
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Partner pointer: a small click-through, always-on-top marker with the helper's
+// name, following the injected mouse position on the host. It makes remote control
+// visible to the person being helped, and works where the OS cursor isn't redrawn
+// for injected input (Windows Sandbox, RDP sessions, some VMs).
+// ---------------------------------------------------------------------------
+let pointerWin = null;
+let pointerName = '';
+let pointerHideTimer = null;
+
+function pointerHtml(name) {
+  const safe = String(name || '').slice(0, 32)
+    .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<style>html,body{margin:0;background:transparent;overflow:hidden;font:600 11px "Segoe UI",sans-serif;user-select:none}
+svg{position:absolute;left:0;top:0;width:24px;height:24px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+span{position:absolute;left:18px;top:20px;padding:2px 8px;border-radius:99px;color:#fff;white-space:nowrap;
+background:linear-gradient(135deg,#7c5cff,#22d3ee);box-shadow:0 2px 6px rgba(0,0,0,.4)}</style></head><body>
+<svg viewBox="0 0 24 24"><path d="M2 1.5 19 12.4l-7.3 1.3 4.4 7.6-3.1 1.8-4.4-7.7L2 20z" fill="#7c5cff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+<span>${safe}</span></body></html>`;
+}
+
+function ensurePointer() {
+  if (pointerWin && !pointerWin.isDestroyed()) return pointerWin;
+  pointerWin = new BrowserWindow({
+    width: 220, height: 46, x: 0, y: 0,
+    frame: false, transparent: true, resizable: false, movable: false,
+    focusable: false, skipTaskbar: true, show: false, hasShadow: false,
+    alwaysOnTop: true, fullscreenable: false,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false }
+  });
+  pointerWin.setAlwaysOnTop(true, 'screen-saver');
+  pointerWin.setIgnoreMouseEvents(true);
+  pointerWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(pointerHtml(pointerName)));
+  pointerWin.on('closed', () => { pointerWin = null; });
+  return pointerWin;
+}
+
+function movePointer(x, y) {
+  const w = ensurePointer();
+  // the window ignores the mouse, so clicks pass through; align the arrow tip (2,1.5) with the point
+  w.setPosition(x - 2, y - 1, false);
+  if (!w.isVisible()) w.showInactive();
+  clearTimeout(pointerHideTimer);
+  pointerHideTimer = setTimeout(() => { if (pointerWin && !pointerWin.isDestroyed()) pointerWin.hide(); }, 4000);
+}
+
+function destroyPointer() {
+  clearTimeout(pointerHideTimer);
+  if (pointerWin && !pointerWin.isDestroyed()) pointerWin.destroy();
+  pointerWin = null;
+}
+
+ipcMain.handle('pointer:name', (_e, name) => {
+  pointerName = String(name || '');
+  if (pointerWin && !pointerWin.isDestroyed()) {
+    pointerWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(pointerHtml(pointerName)));
+  }
+});
+
 ipcMain.handle('input:start', () => startInput());
-ipcMain.handle('input:stop', () => stopInput());
+ipcMain.handle('input:stop', () => { stopInput(); destroyPointer(); });
 
 ipcMain.on('input:event', (_e, ev) => {
   if (!inputProc || !ev || typeof ev !== 'object') return;
@@ -302,8 +363,9 @@ ipcMain.on('input:event', (_e, ev) => {
     case 'm': {
       const x = Number(ev.x), y = Number(ev.y);
       if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
-      const [ax, ay] = toAbsolute(x, y);
+      const [ax, ay, px, py] = toAbsolute(x, y);
       line = `m ${ax} ${ay}`;
+      try { movePointer(px, py); } catch {}
       break;
     }
     case 'd': case 'u': {
